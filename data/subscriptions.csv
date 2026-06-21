@@ -2149,3 +2149,7 @@ subscription_id,user_id,plan_name,monthly_fee,start_date,end_date,subscription_s
 2148,2148,Pro,45,2026-10-15,,Active
 2149,2149,Pro,45,2026-11-07,,Active
 2150,2150,Pro,45,2026-04-02,,Active
+2151,2153,Growth,49,2026-06-20,,active
+2152,2154,Growth,49,2026-06-20,,active
+2153,2155,Pro,79,2026-06-20,,active
+2154,2156,Growth,49,2026-06-20,,active

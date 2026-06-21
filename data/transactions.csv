@@ -28211,3 +28211,45 @@ transaction_id,user_id,subscription_id,transaction_date,amount,payment_status,pa
 28210,2150,2150,2026-10-01,45,Successful,PayPal
 28211,2150,2150,2026-11-01,45,Successful,PayPal
 28212,2150,2150,2026-12-01,45,Successful,Debit Card
+28213,2154,2152,2026-06-20,49,successful,Credit Card
+28214,2154,2152,2026-06-20,49,successful,Credit Card
+28215,2154,2152,2026-06-20,49,successful,Bank Transfer
+28216,2154,2152,2026-06-20,49,failed,Debit Card
+28217,2153,2151,2026-06-20,49,successful,Debit Card
+28218,2153,2151,2026-06-20,49,successful,Bank Transfer
+28219,2153,2151,2026-06-20,49,successful,PayPal
+28220,2154,2152,2026-06-20,49,successful,Bank Transfer
+28221,2153,2151,2026-06-20,49,failed,Debit Card
+28222,2153,2151,2026-06-20,49,failed,Credit Card
+28223,2154,2152,2026-06-20,49,successful,PayPal
+28224,2153,2151,2026-06-20,49,failed,PayPal
+28225,2153,2151,2026-06-20,49,successful,Credit Card
+28226,2153,2151,2026-06-20,49,successful,Credit Card
+28227,2154,2152,2026-06-20,49,successful,Credit Card
+28228,2153,2151,2026-06-20,49,successful,PayPal
+28229,2154,2152,2026-06-20,49,failed,Debit Card
+28230,2154,2152,2026-06-20,49,successful,Bank Transfer
+28231,2153,2151,2026-06-20,49,successful,PayPal
+28232,2153,2151,2026-06-20,49,successful,PayPal
+28233,2153,2151,2026-06-20,49,failed,PayPal
+28234,2153,2151,2026-06-20,49,successful,Bank Transfer
+28235,2154,2152,2026-06-20,49,successful,Debit Card
+28236,2153,2151,2026-06-20,49,successful,PayPal
+28237,2154,2152,2026-06-20,49,successful,Credit Card
+28238,2153,2151,2026-06-20,49,successful,Credit Card
+28239,2153,2151,2026-06-20,49,successful,Debit Card
+28240,2154,2152,2026-06-20,49,successful,Debit Card
+28241,2156,2154,2026-06-20,49,failed,Debit Card
+28242,2156,2154,2026-06-20,49,successful,Credit Card
+28243,2155,2153,2026-06-20,79,successful,Debit Card
+28244,2154,2152,2026-06-20,49,successful,Debit Card
+28245,2155,2153,2026-06-20,79,successful,PayPal
+28246,2155,2153,2026-06-20,79,successful,Debit Card
+28247,2154,2152,2026-06-20,49,successful,PayPal
+28248,2154,2152,2026-06-20,49,successful,Bank Transfer
+28249,2153,2151,2026-06-20,49,successful,PayPal
+28250,2155,2153,2026-06-20,79,successful,Credit Card
+28251,2154,2152,2026-06-20,49,successful,PayPal
+28252,2153,2151,2026-06-20,49,successful,Debit Card
+28253,2154,2152,2026-06-20,49,successful,Bank Transfer
+28254,2155,2153,2026-06-20,79,successful,Bank Transfer

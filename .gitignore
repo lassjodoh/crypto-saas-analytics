@@ -1,4 +1,13 @@
-venv/
+# Environment
 .env
+
+# Virtual Environment
+venv/
+
+# Python
 __pycache__/
 *.pyc
+
+# Incremental pipeline files
+batches/
+pipeline_state.json
