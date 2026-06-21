@@ -25,7 +25,23 @@ def get_latest_batch_folder():
     if not batch_folders:
         raise FileNotFoundError("No batch folders found.")
 
-    return max(batch_folders)
+    numeric_batches = []
+
+    for folder in batch_folders:
+        folder_name = os.path.basename(folder)
+
+        try:
+            batch_number = int(folder_name.replace("batch_", ""))
+            numeric_batches.append((batch_number, folder))
+        except ValueError:
+            print(f"Skipping non-numeric batch folder: {folder_name}")
+
+    if not numeric_batches:
+        raise FileNotFoundError("No valid numeric batch folders found.")
+
+    latest_batch = max(numeric_batches, key=lambda x: x[0])[1]
+
+    return latest_batch
 
 
 conn = snowflake.connector.connect(
@@ -38,6 +54,9 @@ conn = snowflake.connector.connect(
 )
 
 print("Connected to Snowflake.")
+
+
+print("Available batches:", glob.glob(os.path.join(BATCH_DIR, "batch_*")))
 
 latest_batch = get_latest_batch_folder()
 print(f"Loading latest batch: {latest_batch}")

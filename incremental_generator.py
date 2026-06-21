@@ -1,162 +1,267 @@
 import os
-import glob
-import pandas as pd
-import snowflake.connector
-from dotenv import load_dotenv
-from snowflake.connector.pandas_tools import write_pandas
+import json
+import random
+from datetime import datetime, timedelta
 
-load_dotenv(dotenv_path=".env")
+import pandas as pd
+from faker import Faker
+
+fake = Faker()
 
 BATCH_DIR = "batches"
-
-csv_to_table = {
-    "users.csv": "USERS",
-    "subscriptions.csv": "SUBSCRIPTIONS",
-    "transactions.csv": "TRANSACTIONS",
-    "product_usage.csv": "PRODUCT_USAGE",
-    "feature_usage.csv": "FEATURE_USAGE",
-    "support_tickets.csv": "SUPPORT_TICKETS"
-}
+STATE_FILE = "pipeline_state.json"
 
 
-def get_latest_batch_folder():
-    batch_folders = glob.glob(os.path.join(BATCH_DIR, "batch_*"))
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {
+            "last_run_number": 0,
+            "last_generated_date": "2026-06-20",
+            "last_batch_folder": "batches\\batch_0000"
+        }
 
-    if not batch_folders:
-        raise FileNotFoundError("No batch folders found.")
-
-    return max(batch_folders)
-
-
-def get_batch_name(batch_folder):
-    return os.path.basename(batch_folder)
-
-
-def ensure_batch_log_table(cursor):
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS BATCH_LOAD_LOG (
-            BATCH_NAME STRING,
-            LOAD_STARTED_AT TIMESTAMP,
-            LOAD_COMPLETED_AT TIMESTAMP,
-            STATUS STRING,
-            ROWS_LOADED NUMBER
-        )
-    """)
+    with open(STATE_FILE, "r") as file:
+        return json.load(file)
 
 
-def batch_already_loaded(cursor, batch_name):
-    cursor.execute("""
-        SELECT COUNT(*)
-        FROM BATCH_LOAD_LOG
-        WHERE BATCH_NAME = %s
-          AND STATUS = 'SUCCESS'
-    """, (batch_name,))
-
-    return cursor.fetchone()[0] > 0
+def save_state(state):
+    with open(STATE_FILE, "w") as file:
+        json.dump(state, file, indent=4)
 
 
-def insert_batch_start(cursor, batch_name):
-    cursor.execute("""
-        INSERT INTO BATCH_LOAD_LOG (
-            BATCH_NAME,
-            LOAD_STARTED_AT,
-            STATUS,
-            ROWS_LOADED
-        )
-        VALUES (%s, CURRENT_TIMESTAMP, 'STARTED', 0)
-    """, (batch_name,))
+def create_batch_folder(run_number):
+    batch_name = f"batch_{run_number:04d}"
+    batch_path = os.path.join(BATCH_DIR, batch_name)
+    os.makedirs(batch_path, exist_ok=True)
+    return batch_path, batch_name
 
 
-def update_batch_success(cursor, batch_name, rows_loaded):
-    cursor.execute("""
-        INSERT INTO BATCH_LOAD_LOG (
-            BATCH_NAME,
-            LOAD_STARTED_AT,
-            LOAD_COMPLETED_AT,
-            STATUS,
-            ROWS_LOADED
-        )
-        VALUES (%s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'SUCCESS', %s)
-    """, (batch_name, rows_loaded))
+def get_next_date(state):
+    last_date = datetime.strptime(state["last_generated_date"], "%Y-%m-%d").date()
+    return last_date + timedelta(days=1)
 
 
-def update_batch_failed(cursor, batch_name):
-    cursor.execute("""
-        INSERT INTO BATCH_LOAD_LOG (
-            BATCH_NAME,
-            LOAD_STARTED_AT,
-            LOAD_COMPLETED_AT,
-            STATUS,
-            ROWS_LOADED
-        )
-        VALUES (%s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'FAILED', 0)
-    """, (batch_name,))
+def generate_users(start_user_id, batch_size, generated_date):
+    users = []
+
+    countries = ["Canada", "United States", "United Kingdom", "Germany", "France"]
+    channels = ["Organic Search", "Paid Ads", "Referral", "Social Media", "Email Campaign"]
+    tiers = ["Basic", "Pro", "Enterprise"]
+    statuses = ["Active", "Active", "Active", "Churned"]
+
+    for i in range(batch_size):
+        users.append({
+            "user_id": start_user_id + i + 1,
+            "full_name": fake.name(),
+            "email": fake.unique.email(),
+            "signup_date": generated_date,
+            "country": random.choice(countries),
+            "acquisition_channel": random.choice(channels),
+            "subscription_tier": random.choice(tiers),
+            "status": random.choice(statuses)
+        })
+
+    return pd.DataFrame(users)
 
 
-conn = snowflake.connector.connect(
-    user=os.getenv("SNOWFLAKE_USER"),
-    password=os.getenv("SNOWFLAKE_PASSWORD"),
-    account=os.getenv("SNOWFLAKE_ACCOUNT"),
-    warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
-    database=os.getenv("SNOWFLAKE_DATABASE"),
-    schema=os.getenv("SNOWFLAKE_SCHEMA")
-)
+def generate_subscriptions(users_df, start_subscription_id):
+    subscriptions = []
 
-cursor = conn.cursor()
+    tier_prices = {
+        "Basic": 29,
+        "Pro": 45,
+        "Enterprise": 79
+    }
 
-try:
-    print("Connected to Snowflake.")
+    statuses = ["Active", "Active", "Active", "Churned"]
 
-    ensure_batch_log_table(cursor)
+    for i, (_, user) in enumerate(users_df.iterrows()):
+        status = random.choice(statuses)
 
-    latest_batch = get_latest_batch_folder()
-    batch_name = get_batch_name(latest_batch)
+        subscriptions.append({
+            "subscription_id": start_subscription_id + i + 1,
+            "user_id": user["user_id"],
+            "plan_name": user["subscription_tier"],
+            "monthly_fee": tier_prices[user["subscription_tier"]],
+            "start_date": user["signup_date"],
+            "end_date": "" if status == "Active" else user["signup_date"],
+            "subscription_status": status
+        })
 
-    print(f"Latest batch: {batch_name}")
+    return pd.DataFrame(subscriptions)
 
-    if batch_already_loaded(cursor, batch_name):
-        print(f"{batch_name} has already been loaded. Skipping.")
-    else:
-        insert_batch_start(cursor, batch_name)
 
-        total_rows_loaded = 0
+def generate_transactions(subscriptions_df, start_transaction_id, generated_date):
+    transactions = []
+    transaction_id = start_transaction_id
 
-        for csv_file, table_name in csv_to_table.items():
-            file_path = os.path.join(latest_batch, csv_file)
+    payment_methods = ["Credit Card", "Debit Card", "PayPal", "Bank Transfer"]
+    payment_statuses = ["Paid", "Paid", "Paid", "Failed"]
 
-            if not os.path.exists(file_path):
-                print(f"Skipping {csv_file} — not found in batch.")
-                continue
+    for _, sub in subscriptions_df.iterrows():
+        for _ in range(random.randint(1, 4)):
+            transaction_id += 1
 
-            df = pd.read_csv(file_path)
-            df.columns = [col.upper() for col in df.columns]
+            transactions.append({
+                "transaction_id": transaction_id,
+                "user_id": sub["user_id"],
+                "subscription_id": sub["subscription_id"],
+                "transaction_date": generated_date,
+                "amount": sub["monthly_fee"],
+                "payment_status": random.choice(payment_statuses),
+                "payment_method": random.choice(payment_methods)
+            })
 
-            success, nchunks, nrows, _ = write_pandas(
-                conn,
-                df,
-                table_name,
-                auto_create_table=False,
-                overwrite=False
-            )
+    return pd.DataFrame(transactions), transaction_id
 
-            total_rows_loaded += nrows
 
-            print(f"{table_name}: inserted {nrows} rows")
+def generate_product_usage(users_df, start_usage_id, generated_date):
+    usage = []
+    usage_id = start_usage_id
 
-        update_batch_success(cursor, batch_name, total_rows_loaded)
+    activity_month = generated_date.strftime("%Y-%m")
 
-        print(f"{batch_name} loaded successfully.")
-        print(f"Total rows loaded: {total_rows_loaded}")
+    for _, user in users_df.iterrows():
+        usage_id += 1
 
-except Exception as e:
-    print(f"Load failed: {e}")
+        usage.append({
+            "usage_id": usage_id,
+            "user_id": user["user_id"],
+            "activity_month": activity_month,
+            "login_count": random.randint(1, 25),
+            "dashboards_viewed": random.randint(1, 60),
+            "reports_generated": random.randint(0, 20),
+            "api_calls": random.randint(0, 5000),
+            "session_minutes": random.randint(5, 500)
+        })
 
-    try:
-        update_batch_failed(cursor, batch_name)
-    except Exception:
-        pass
+    return pd.DataFrame(usage), usage_id
 
-finally:
-    cursor.close()
-    conn.close()
-    print("Snowflake connection closed.")
+
+def generate_feature_usage(users_df, start_feature_usage_id, generated_date):
+    feature_usage = []
+    feature_usage_id = start_feature_usage_id
+
+    features = [
+        "Price Alerts",
+        "Auto Invest",
+        "Portfolio Insights",
+        "Risk Dashboard",
+        "API Access"
+    ]
+
+    usage_month = generated_date.strftime("%Y-%m")
+
+    for _, user in users_df.iterrows():
+        for _ in range(random.randint(1, 4)):
+            feature_usage_id += 1
+
+            feature_usage.append({
+                "feature_usage_id": feature_usage_id,
+                "user_id": user["user_id"],
+                "feature_name": random.choice(features),
+                "usage_month": usage_month,
+                "usage_count": random.randint(1, 20)
+            })
+
+    return pd.DataFrame(feature_usage), feature_usage_id
+
+
+def generate_support_tickets(users_df, start_ticket_id, generated_date):
+    tickets = []
+    ticket_id = start_ticket_id
+
+    categories = ["Billing", "Login Issue", "Trading Issue", "Account Verification", "Technical Support"]
+    priorities = ["Low", "Medium", "High"]
+    statuses = ["Open", "Resolved", "Resolved", "Closed"]
+
+    sampled_users = users_df.sample(frac=0.25) if len(users_df) > 0 else users_df
+
+    for _, user in sampled_users.iterrows():
+        ticket_id += 1
+
+        tickets.append({
+            "ticket_id": ticket_id,
+            "user_id": user["user_id"],
+            "ticket_date": generated_date,
+            "category": random.choice(categories),
+            "priority": random.choice(priorities),
+            "status": random.choice(statuses),
+            "resolution_hours": random.randint(1, 120)
+        })
+
+    return pd.DataFrame(tickets), ticket_id
+
+
+def save_csv(df, batch_path, file_name):
+    file_path = os.path.join(batch_path, file_name)
+    df.to_csv(file_path, index=False)
+    print(f"Created {file_path}: {len(df)} rows")
+
+
+if __name__ == "__main__":
+    state = load_state()
+
+    last_run_number = state.get("last_run_number", 0)
+    new_run_number = last_run_number + 1
+    generated_date = get_next_date(state)
+
+    batch_path, batch_name = create_batch_folder(new_run_number)
+
+    print(f"Generating {batch_name} for {generated_date}...")
+
+    batch_size = random.randint(10, 30)
+
+    start_user_id = 2150 + (last_run_number * 30)
+    start_subscription_id = 2150 + (last_run_number * 30)
+    start_transaction_id = 28212 + (last_run_number * 120)
+    start_usage_id = 30475 + (last_run_number * 30)
+    start_feature_usage_id = 75996 + (last_run_number * 90)
+    start_ticket_id = 5301 + (last_run_number * 10)
+
+    users_df = generate_users(start_user_id, batch_size, generated_date)
+
+    subscriptions_df = generate_subscriptions(
+        users_df,
+        start_subscription_id
+    )
+
+    transactions_df, _ = generate_transactions(
+        subscriptions_df,
+        start_transaction_id,
+        generated_date
+    )
+
+    product_usage_df, _ = generate_product_usage(
+        users_df,
+        start_usage_id,
+        generated_date
+    )
+
+    feature_usage_df, _ = generate_feature_usage(
+        users_df,
+        start_feature_usage_id,
+        generated_date
+    )
+
+    support_tickets_df, _ = generate_support_tickets(
+        users_df,
+        start_ticket_id,
+        generated_date
+    )
+
+    save_csv(users_df, batch_path, "users.csv")
+    save_csv(subscriptions_df, batch_path, "subscriptions.csv")
+    save_csv(transactions_df, batch_path, "transactions.csv")
+    save_csv(product_usage_df, batch_path, "product_usage.csv")
+    save_csv(feature_usage_df, batch_path, "feature_usage.csv")
+    save_csv(support_tickets_df, batch_path, "support_tickets.csv")
+
+    state["last_run_number"] = new_run_number
+    state["last_generated_date"] = generated_date.strftime("%Y-%m-%d")
+    state["last_batch_folder"] = batch_path
+
+    save_state(state)
+
+    print(f"{batch_name} generated successfully.")
+    print(f"Batch folder: {batch_path}")
