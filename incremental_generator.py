@@ -4,12 +4,111 @@ import random
 from datetime import datetime, timedelta
 
 import pandas as pd
+import snowflake.connector
+from dotenv import load_dotenv
 from faker import Faker
 
+load_dotenv(dotenv_path=".env")
 fake = Faker()
 
 BATCH_DIR = "batches"
 STATE_FILE = "pipeline_state.json"
+
+NEW_USERS_PER_RUN = 1
+MIN_TRANSACTIONS = 20
+MAX_TRANSACTIONS = 100
+MIN_PRODUCT_USAGE = 20
+MAX_PRODUCT_USAGE = 100
+MIN_FEATURE_USAGE = 20
+MAX_FEATURE_USAGE = 100
+MAX_SUPPORT_TICKETS = 5
+
+
+def get_snowflake_connection():
+    return snowflake.connector.connect(
+        user=os.getenv("SNOWFLAKE_USER"),
+        password=os.getenv("SNOWFLAKE_PASSWORD"),
+        account=os.getenv("SNOWFLAKE_ACCOUNT"),
+        warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
+        database=os.getenv("SNOWFLAKE_DATABASE"),
+        schema=os.getenv("SNOWFLAKE_SCHEMA")
+    )
+
+
+def get_max_ids_from_snowflake():
+    conn = get_snowflake_connection()
+    cursor = conn.cursor()
+
+    try:
+        queries = {
+            "user_id": "SELECT COALESCE(MAX(USER_ID), 0) FROM BRONZE.USERS",
+            "subscription_id": "SELECT COALESCE(MAX(SUBSCRIPTION_ID), 0) FROM BRONZE.SUBSCRIPTIONS",
+            "transaction_id": "SELECT COALESCE(MAX(TRANSACTION_ID), 0) FROM BRONZE.TRANSACTIONS",
+            "usage_id": "SELECT COALESCE(MAX(USAGE_ID), 0) FROM BRONZE.PRODUCT_USAGE",
+            "feature_usage_id": "SELECT COALESCE(MAX(FEATURE_USAGE_ID), 0) FROM BRONZE.FEATURE_USAGE",
+            "ticket_id": "SELECT COALESCE(MAX(TICKET_ID), 0) FROM BRONZE.SUPPORT_TICKETS"
+        }
+
+        max_ids = {}
+
+        for key, query in queries.items():
+            cursor.execute(query)
+            max_ids[key] = int(cursor.fetchone()[0])
+
+        return max_ids
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_existing_active_subscriptions(limit=500):
+    conn = get_snowflake_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(f"""
+            SELECT
+                USER_ID,
+                SUBSCRIPTION_ID,
+                MONTHLY_FEE
+            FROM BRONZE.SUBSCRIPTIONS
+            WHERE SUBSCRIPTION_STATUS = 'Active'
+            ORDER BY RANDOM()
+            LIMIT {limit}
+        """)
+
+        rows = cursor.fetchall()
+
+        return pd.DataFrame(
+            rows,
+            columns=["user_id", "subscription_id", "monthly_fee"]
+        )
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_existing_users(limit=500):
+    conn = get_snowflake_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(f"""
+            SELECT USER_ID
+            FROM BRONZE.USERS
+            ORDER BY RANDOM()
+            LIMIT {limit}
+        """)
+
+        rows = cursor.fetchall()
+
+        return pd.DataFrame(rows, columns=["user_id"])
+
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def load_state():
@@ -41,15 +140,15 @@ def get_next_date(state):
     return last_date + timedelta(days=1)
 
 
-def generate_users(start_user_id, batch_size, generated_date):
-    users = []
-
+def generate_users(start_user_id, generated_date):
     countries = ["Canada", "United States", "United Kingdom", "Germany", "France"]
     channels = ["Organic Search", "Paid Ads", "Referral", "Social Media", "Email Campaign"]
     tiers = ["Basic", "Pro", "Enterprise"]
     statuses = ["Active", "Active", "Active", "Churned"]
 
-    for i in range(batch_size):
+    users = []
+
+    for i in range(NEW_USERS_PER_RUN):
         users.append({
             "user_id": start_user_id + i + 1,
             "full_name": fake.name(),
@@ -65,18 +164,16 @@ def generate_users(start_user_id, batch_size, generated_date):
 
 
 def generate_subscriptions(users_df, start_subscription_id):
-    subscriptions = []
-
     tier_prices = {
         "Basic": 29,
         "Pro": 45,
         "Enterprise": 79
     }
 
-    statuses = ["Active", "Active", "Active", "Churned"]
+    subscriptions = []
 
     for i, (_, user) in enumerate(users_df.iterrows()):
-        status = random.choice(statuses)
+        status = "Active"
 
         subscriptions.append({
             "subscription_id": start_subscription_id + i + 1,
@@ -84,44 +181,56 @@ def generate_subscriptions(users_df, start_subscription_id):
             "plan_name": user["subscription_tier"],
             "monthly_fee": tier_prices[user["subscription_tier"]],
             "start_date": user["signup_date"],
-            "end_date": "" if status == "Active" else user["signup_date"],
+            "end_date": None,
             "subscription_status": status
         })
 
     return pd.DataFrame(subscriptions)
 
 
-def generate_transactions(subscriptions_df, start_transaction_id, generated_date):
+def generate_transactions(subscriptions_pool_df, start_transaction_id, generated_date):
     transactions = []
     transaction_id = start_transaction_id
 
     payment_methods = ["Credit Card", "Debit Card", "PayPal", "Bank Transfer"]
     payment_statuses = ["Paid", "Paid", "Paid", "Failed"]
 
-    for _, sub in subscriptions_df.iterrows():
-        for _ in range(random.randint(1, 4)):
-            transaction_id += 1
+    transaction_count = random.randint(MIN_TRANSACTIONS, MAX_TRANSACTIONS)
 
-            transactions.append({
-                "transaction_id": transaction_id,
-                "user_id": sub["user_id"],
-                "subscription_id": sub["subscription_id"],
-                "transaction_date": generated_date,
-                "amount": sub["monthly_fee"],
-                "payment_status": random.choice(payment_statuses),
-                "payment_method": random.choice(payment_methods)
-            })
+    sampled = subscriptions_pool_df.sample(
+        n=min(transaction_count, len(subscriptions_pool_df)),
+        replace=len(subscriptions_pool_df) < transaction_count
+    )
+
+    for _, sub in sampled.iterrows():
+        transaction_id += 1
+
+        transactions.append({
+            "transaction_id": transaction_id,
+            "user_id": sub["user_id"],
+            "subscription_id": sub["subscription_id"],
+            "transaction_date": generated_date,
+            "amount": sub["monthly_fee"],
+            "payment_status": random.choice(payment_statuses),
+            "payment_method": random.choice(payment_methods)
+        })
 
     return pd.DataFrame(transactions), transaction_id
 
 
-def generate_product_usage(users_df, start_usage_id, generated_date):
+def generate_product_usage(users_pool_df, start_usage_id, generated_date):
     usage = []
     usage_id = start_usage_id
-
     activity_month = generated_date.strftime("%Y-%m")
 
-    for _, user in users_df.iterrows():
+    usage_count = random.randint(MIN_PRODUCT_USAGE, MAX_PRODUCT_USAGE)
+
+    sampled = users_pool_df.sample(
+        n=min(usage_count, len(users_pool_df)),
+        replace=len(users_pool_df) < usage_count
+    )
+
+    for _, user in sampled.iterrows():
         usage_id += 1
 
         usage.append({
@@ -138,9 +247,10 @@ def generate_product_usage(users_df, start_usage_id, generated_date):
     return pd.DataFrame(usage), usage_id
 
 
-def generate_feature_usage(users_df, start_feature_usage_id, generated_date):
+def generate_feature_usage(users_pool_df, start_feature_usage_id, generated_date):
     feature_usage = []
     feature_usage_id = start_feature_usage_id
+    usage_month = generated_date.strftime("%Y-%m")
 
     features = [
         "Price Alerts",
@@ -150,24 +260,28 @@ def generate_feature_usage(users_df, start_feature_usage_id, generated_date):
         "API Access"
     ]
 
-    usage_month = generated_date.strftime("%Y-%m")
+    feature_count = random.randint(MIN_FEATURE_USAGE, MAX_FEATURE_USAGE)
 
-    for _, user in users_df.iterrows():
-        for _ in range(random.randint(1, 4)):
-            feature_usage_id += 1
+    sampled = users_pool_df.sample(
+        n=min(feature_count, len(users_pool_df)),
+        replace=len(users_pool_df) < feature_count
+    )
 
-            feature_usage.append({
-                "feature_usage_id": feature_usage_id,
-                "user_id": user["user_id"],
-                "feature_name": random.choice(features),
-                "usage_month": usage_month,
-                "usage_count": random.randint(1, 20)
-            })
+    for _, user in sampled.iterrows():
+        feature_usage_id += 1
+
+        feature_usage.append({
+            "feature_usage_id": feature_usage_id,
+            "user_id": user["user_id"],
+            "feature_name": random.choice(features),
+            "usage_month": usage_month,
+            "usage_count": random.randint(1, 20)
+        })
 
     return pd.DataFrame(feature_usage), feature_usage_id
 
 
-def generate_support_tickets(users_df, start_ticket_id, generated_date):
+def generate_support_tickets(users_pool_df, start_ticket_id, generated_date):
     tickets = []
     ticket_id = start_ticket_id
 
@@ -175,9 +289,25 @@ def generate_support_tickets(users_df, start_ticket_id, generated_date):
     priorities = ["Low", "Medium", "High"]
     statuses = ["Open", "Resolved", "Resolved", "Closed"]
 
-    sampled_users = users_df.sample(frac=0.25) if len(users_df) > 0 else users_df
+    ticket_count = random.randint(0, MAX_SUPPORT_TICKETS)
 
-    for _, user in sampled_users.iterrows():
+    if ticket_count == 0:
+        return pd.DataFrame(columns=[
+            "ticket_id",
+            "user_id",
+            "ticket_date",
+            "category",
+            "priority",
+            "status",
+            "resolution_hours"
+        ]), ticket_id
+
+    sampled = users_pool_df.sample(
+        n=min(ticket_count, len(users_pool_df)),
+        replace=len(users_pool_df) < ticket_count
+    )
+
+    for _, user in sampled.iterrows():
         ticket_id += 1
 
         tickets.append({
@@ -210,44 +340,62 @@ if __name__ == "__main__":
 
     print(f"Generating {batch_name} for {generated_date}...")
 
-    batch_size = random.randint(10, 30)
+    max_ids = get_max_ids_from_snowflake()
 
-    start_user_id = 2150 + (last_run_number * 30)
-    start_subscription_id = 2150 + (last_run_number * 30)
-    start_transaction_id = 28212 + (last_run_number * 120)
-    start_usage_id = 30475 + (last_run_number * 30)
-    start_feature_usage_id = 75996 + (last_run_number * 90)
-    start_ticket_id = 5301 + (last_run_number * 10)
+    print("Starting IDs from Snowflake:")
+    print(max_ids)
 
-    users_df = generate_users(start_user_id, batch_size, generated_date)
+    users_df = generate_users(
+        start_user_id=max_ids["user_id"],
+        generated_date=generated_date
+    )
 
     subscriptions_df = generate_subscriptions(
-        users_df,
-        start_subscription_id
+        users_df=users_df,
+        start_subscription_id=max_ids["subscription_id"]
+    )
+
+    existing_subscriptions_df = get_existing_active_subscriptions(limit=500)
+    existing_users_df = get_existing_users(limit=500)
+
+    subscriptions_pool_df = pd.concat(
+        [
+            existing_subscriptions_df,
+            subscriptions_df[["user_id", "subscription_id", "monthly_fee"]]
+        ],
+        ignore_index=True
+    )
+
+    users_pool_df = pd.concat(
+        [
+            existing_users_df,
+            users_df[["user_id"]]
+        ],
+        ignore_index=True
     )
 
     transactions_df, _ = generate_transactions(
-        subscriptions_df,
-        start_transaction_id,
-        generated_date
+        subscriptions_pool_df=subscriptions_pool_df,
+        start_transaction_id=max_ids["transaction_id"],
+        generated_date=generated_date
     )
 
     product_usage_df, _ = generate_product_usage(
-        users_df,
-        start_usage_id,
-        generated_date
+        users_pool_df=users_pool_df,
+        start_usage_id=max_ids["usage_id"],
+        generated_date=generated_date
     )
 
     feature_usage_df, _ = generate_feature_usage(
-        users_df,
-        start_feature_usage_id,
-        generated_date
+        users_pool_df=users_pool_df,
+        start_feature_usage_id=max_ids["feature_usage_id"],
+        generated_date=generated_date
     )
 
     support_tickets_df, _ = generate_support_tickets(
-        users_df,
-        start_ticket_id,
-        generated_date
+        users_pool_df=users_pool_df,
+        start_ticket_id=max_ids["ticket_id"],
+        generated_date=generated_date
     )
 
     save_csv(users_df, batch_path, "users.csv")
